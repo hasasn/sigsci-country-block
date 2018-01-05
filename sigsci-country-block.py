@@ -9,7 +9,7 @@ import json
 from modules.SigSci import SigSciAPI
 import geoip2.database
 
-reader         = geoip2.database.Reader('data/GeoLite2-City.mmdb')
+#reader         = geoip2.database.Reader('data/GeoLite2-City.mmdb')
 sigsci_feed    = 'data/sigsci-feed.json'
 sigsci_bl      = 'data/sigsci-bl.json'
 sigsci_bl_post = 'data/sigsci-bl-post.json'
@@ -20,6 +20,8 @@ if __name__ == '__main__':
     # parse CLI arguments
     parser = argparse.ArgumentParser(description='Signal Sciences Country Block(er).', prefix_chars='--')
     parser.add_argument('--country', help='The country iso code, e.g. IR, CN, US, etc.', default=None)
+    parser.add_argument('--tags', help='One or more system tags to use for GEO IP Blocking, Default is XSS, SQLI, TRAVERSAL, CMDEXE, USERAGENT, BACKDOOR, CODEINJECTION, RESPONSESPLIT', default=ATTACK_TAGS)
+    parser.add_argument('--rcode', help='In addition to searching for offending IPs based on tag further reduction can be performed to blacklist IPs with specific response codes from a GEOIP', default=None)
     arguments = parser.parse_args()
 
     if None == arguments.country:
@@ -50,7 +52,7 @@ if __name__ == '__main__':
     sigsci.pword = os.environ['SIGSCI_PASSWORD']
     sigsci.corp  = os.environ['SIGSCI_CORP']
     sigsci.site  = os.environ['SIGSCI_SITE']
-    sigsci.tags  = ATTACK_TAGS
+    sigsci.tags  = arguments.tags
 
     if sigsci.authenticate():
         while True:
@@ -90,16 +92,16 @@ if __name__ == '__main__':
                 # get suspect ip
                 suspect_ip = request['remoteIP']
 
-                for header in request['headersIn']:
-                    if header[0] == 'X-Forwarded-For':
-                        suspect_ip = header[1]
+                #for header in request['headersIn']:
+                #    if header[0] == 'X-Forwarded-For':
+                #        suspect_ip = header[1]
 
                 # do country lookup by ip
                 # test IR ip: 2.144.5.5
                 # suspect_ip = '2.144.5.5'
-                country_code = reader.city(suspect_ip)
-
-                if arguments.country == country_code.country.iso_code:
+                country_code = request['remoteCountryCode']
+                response_code = request['responseCode']
+                if arguments.country == country_code:
                     if len(blacklist) >= BL_MAX:
                         print('Blacklist is full, but I wanted to blacklist {}'.format(suspect_ip))
                     else:
@@ -110,7 +112,29 @@ if __name__ == '__main__':
                         blip['source']  = suspect_ip
                         # format: 2017-08-24T16:04:44.501Z
                         blip['expires'] = expires.strftime('%Y-%m-%dT%H:%M:%S.500Z')
-                        blip['note']    = 'Auto block {} ip'.format(country_code.country.iso_code)
+                        blip['note']    = 'Auto block {} ip'.format(country_code)
+
+                        json_obj = { 'data': []}
+                        json_obj['data'].append(blip)
+                        # overwrite if exists
+                        with open(sigsci_bl_post, 'w') as outfile:
+                            json.dump(json_obj, outfile)
+                        # update blacklist!
+                        sigsci.file = sigsci_bl_post
+                        sigsci.post_blacklist()
+                # TODO refactor to DRY
+                if (arguments.rcode not '') & (arguments.country == country_code & arguments.rcode == response_code):
+                    if len(blacklist) >= BL_MAX:
+                        print('Blacklist is full, but I wanted to blacklist {}'.format(suspect_ip))
+                    else:
+                        print('Blacklisting {}'.format(suspect_ip))
+                        expires = datetime.datetime.utcnow() + datetime.timedelta(hours=5)
+                        #print expires.strftime('%Y-%m-%dT%H:%M:%S.500Z')
+                        blip = {}
+                        blip['source']  = suspect_ip
+                        # format: 2017-08-24T16:04:44.501Z
+                        blip['expires'] = expires.strftime('%Y-%m-%dT%H:%M:%S.500Z')
+                        blip['note']    = 'Auto block {} ip'.format(country_code)
 
                         json_obj = { 'data': []}
                         json_obj['data'].append(blip)
